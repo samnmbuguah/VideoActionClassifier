@@ -70,25 +70,25 @@ def validate_frame_dimensions(frame: np.ndarray) -> None:
     if frame.shape[2] != 3:
         raise ValueError(f"Invalid color channels: expected 3 channels (RGB), got {frame.shape[2]}")
 
-def process_segment(frames, timestamps, processor, model, num_frames=16):
+def process_segment(frames, timestamps, processor, model, num_frames=32):
     """Process a segment of video frames and return predictions."""
     if not frames or not timestamps:
         raise ValueError("Empty frames or timestamps")
     
     try:
-        # Ensure we have enough frames
-        if len(frames) < num_frames:
-            # Duplicate last frame if needed
-            frames.extend([frames[-1]] * (num_frames - len(frames)))
-            timestamps.extend([timestamps[-1]] * (num_frames - len(timestamps)))
-        elif len(frames) > num_frames:
-            # Sample frames evenly
-            indices = np.linspace(0, len(frames)-1, num_frames, dtype=int)
+        # Ensure minimum number of frames (32 for temporal window)
+        while len(frames) < 32:  # Increased from 16 to 32
+            frames.extend(frames[:])  # Duplicate existing frames
+            timestamps.extend(timestamps[:])
+        
+        if len(frames) > 32:
+            # Sample 32 frames evenly
+            indices = np.linspace(0, len(frames)-1, 32, dtype=int)
             frames = [frames[i] for i in indices]
             timestamps = [timestamps[i] for i in indices]
         
-        # Process frames in batches
-        batch_frames = np.stack(frames)
+        # Stack frames with proper dimensions
+        batch_frames = np.stack(frames)  # Shape: (32, 224, 224, 3)
         inputs = processor(list(batch_frames), return_tensors="pt")
         
         with torch.no_grad():
@@ -151,7 +151,7 @@ def process_video_in_segments(video_file, processor, model, segment_duration=60)
             stream_duration = sum(1 for _ in container.decode(video=0)) / fps
             duration = float(stream_duration)
         
-        frames_per_segment = int(fps * segment_duration)
+        frames_per_segment = max(int(fps * segment_duration), 32)  # Ensure minimum 32 frames
         
         all_overall_results = []
         all_frame_results = []
