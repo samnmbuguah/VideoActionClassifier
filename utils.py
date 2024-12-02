@@ -123,12 +123,20 @@ def process_video(video_file, processor, model, num_frames=16, frame_window=8):
             
             window_timestamp = frame_timestamps[i + frame_window // 2]
             
-            # Ensure consistent tensor dimensions
-            window_frames = np.stack(window_frames)  # Shape: (frame_window, height, width, channels)
-            logger.debug(f"Window frames shape: {window_frames.shape}")
+            # Validate dimensions before processing
+            window_frames = [
+                resize_frame(frame) if isinstance(frame, np.ndarray) else frame 
+                for frame in window_frames
+            ]
             
-            # Process frames using the processor
-            window_inputs = processor(list(window_frames), return_tensors="pt")
+            # Add error handling and logging for tensor shapes
+            logger.debug(f"Window frames shape before processing: {len(window_frames)}x{window_frames[0].shape}")
+            
+            # Validate window frame dimensions
+            window_shapes = [frame.shape for frame in window_frames]
+            logger.debug(f"Window frame shapes: {window_shapes}")
+            
+            window_inputs = processor(window_frames, return_tensors="pt")
             logger.debug(f"Window input tensor shape: {window_inputs['pixel_values'].shape}")
             
             with torch.no_grad():
