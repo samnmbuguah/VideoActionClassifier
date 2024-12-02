@@ -117,7 +117,20 @@ def process_video(video_file, processor, model, num_frames=16, frame_window=8):
     try:
         for i in range(0, len(frames) - frame_window + 1, frame_window // 2):
             window_frames = frames[i:i + frame_window]
+            # Ensure we have enough frames in the window
+            while len(window_frames) < frame_window:
+                window_frames.append(window_frames[-1])
+            
             window_timestamp = frame_timestamps[i + frame_window // 2]
+            
+            # Validate dimensions before processing
+            window_frames = [
+                resize_frame(frame) if isinstance(frame, np.ndarray) else frame 
+                for frame in window_frames
+            ]
+            
+            # Add error handling and logging for tensor shapes
+            logger.debug(f"Window frames shape before processing: {len(window_frames)}x{window_frames[0].shape}")
             
             # Validate window frame dimensions
             window_shapes = [frame.shape for frame in window_frames]
