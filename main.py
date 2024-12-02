@@ -113,6 +113,9 @@ try:
                                 })
                         
                         df = pd.DataFrame(temporal_data)
+                        df['timestamp'] = df['timestamp'].astype(float)
+                        df['confidence'] = df['confidence'].astype(float)
+                        df['action'] = df['action'].astype(str)
                         
                         # Create temporal chart with improved visualization
                         chart = alt.Chart(df).mark_line(
@@ -120,9 +123,13 @@ try:
                             point=True
                         ).encode(
                             x=alt.X('timestamp:Q', title='Time (seconds)'),
-                            y=alt.Y('confidence:Q', title='Confidence Score'),
-                            color='action:N',
-                            tooltip=['action', 'confidence', 'timestamp']
+                            y=alt.Y('confidence:Q', title='Confidence Score', scale=alt.Scale(domain=[0, 1])),
+                            color=alt.Color('action:N', title='Action'),
+                            tooltip=[
+                                alt.Tooltip('action:N', title='Action'),
+                                alt.Tooltip('confidence:Q', title='Confidence', format='.2%'),
+                                alt.Tooltip('timestamp:Q', title='Time (s)', format='.2f')
+                            ]
                         ).properties(
                             width=700,
                             height=400,
