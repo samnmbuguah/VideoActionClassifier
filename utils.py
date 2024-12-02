@@ -70,69 +70,27 @@ def validate_frame_dimensions(frame: np.ndarray) -> None:
     if frame.shape[2] != 3:
         raise ValueError(f"Invalid color channels: expected 3 channels (RGB), got {frame.shape[2]}")
 
-def process_video(video_file, processor, model, num_frames=16, frame_window=8):
-    """Process video file and return both overall and frame-by-frame predictions."""
-    frames = []
-    frame_timestamps = []
-    
+def process_segment(frames, timestamps, processor, model, num_frames=16):
+    """Process a segment of video frames and return predictions."""
     try:
-        # Open video file with enhanced error handling
-        container = av.open(video_file)
-        stream = container.streams.video[0]
-        stream.codec_context.thread_type = av.codec.context.ThreadType.AUTO
-        stream.codec_context.thread_count = 8
+        # Sample frames evenly from the segment
+        if len(frames) > num_frames:
+            indices = np.linspace(0, len(frames)-1, num_frames, dtype=int)
+            frames = [frames[i] for i in indices]
+            timestamps = [timestamps[i] for i in indices]
         
-        # Calculate frame interval for consistent sampling
-        total_frames = stream.frames
-        interval = max(total_frames // num_frames, 1)
+        # Ensure minimum number of frames
+        while len(frames) < num_frames:
+            frames.append(frames[-1])
+            timestamps.append(timestamps[-1] if timestamps else 0)
         
-        logger.info(f"Processing video: {total_frames} total frames, sampling interval: {interval}")
-        logger.info(f"Video dimensions: {stream.width}x{stream.height}")
-        
-        # Extract frames with proper error handling
-        for frame_idx, frame in enumerate(container.decode(video=0)):
-            if frame_idx % interval == 0 and len(frames) < num_frames:
-                try:
-                    # Convert frame to RGB numpy array
-                    frame_array = frame.to_ndarray(format="rgb24")
-                    validate_frame_dimensions(frame_array)
-                    
-                    # Ensure frame is resized to model's expected input size
-                    resized_frame = resize_frame(frame_array, (224, 224))
-                    frames.append(resized_frame)
-                    frame_timestamps.append(frame.pts * float(stream.time_base))
-                    
-                    logger.debug(f"Processed frame {frame_idx}: shape={resized_frame.shape}")
-                except Exception as e:
-                    logger.warning(f"Failed to process frame {frame_idx}: {str(e)}")
-                    continue
-                    
-    except Exception as e:
-        logger.error(f"Error reading video file: {str(e)}")
-        raise RuntimeError(f"Failed to process video file: {str(e)}")
-    
-    if not frames:
-        raise ValueError("No valid frames could be extracted from the video")
-    
-    # Ensure we have enough frames by duplicating the last frame if necessary
-    while len(frames) < num_frames:
-        frames.append(frames[-1])
-        frame_timestamps.append(frame_timestamps[-1] if frame_timestamps else 0)
-    
-    try:
-        # Process frames for overall prediction
-        logger.info(f"Processing {len(frames)} frames for overall prediction")
+        # Process frames
         inputs = processor(frames, return_tensors="pt")
-        
-        # Validate tensor dimensions
-        if inputs['pixel_values'].shape != (1, num_frames, 3, 224, 224):
-            raise ValueError(f"Invalid tensor shape: {inputs['pixel_values'].shape}")
-        
         with torch.no_grad():
             outputs = model(**inputs)
             logits = outputs.logits
-            
-        # Get overall predictions
+        
+        # Get predictions
         scores = torch.nn.functional.softmax(logits, dim=1)[0]
         top_scores, top_indices = torch.topk(scores, k=5)
         
@@ -140,51 +98,111 @@ def process_video(video_file, processor, model, num_frames=16, frame_window=8):
             (model.config.id2label[idx.item()], score.item())
             for score, idx in zip(top_scores, top_indices)
         ]
-            
-    except Exception as e:
-        logger.error(f"Error in overall prediction: {str(e)}")
-        raise RuntimeError(f"Failed to generate overall predictions: {str(e)}")
-    
-    # Process frame-by-frame using sliding window
-    frame_results = []
-    try:
-        for i in range(0, len(frames) - frame_window + 1, frame_window // 2):
-            window_frames = frames[i:i + frame_window]
-            
-            # Ensure consistent window size
-            while len(window_frames) < frame_window:
-                window_frames.append(window_frames[-1])
-            
-            window_timestamp = frame_timestamps[i + frame_window // 2]
-            
-            # Process window frames
-            window_inputs = processor(window_frames, return_tensors="pt")
-            
-            # Validate tensor dimensions
-            if window_inputs['pixel_values'].shape != (1, frame_window, 3, 224, 224):
-                logger.warning(f"Invalid window tensor shape: {window_inputs['pixel_values'].shape}")
-                continue
-            
+        
+        # Process frame-by-frame results
+        frame_results = []
+        for i, timestamp in enumerate(timestamps):
+            frame_inputs = processor([frames[i]], return_tensors="pt")
             with torch.no_grad():
-                window_outputs = model(**window_inputs)
-                window_logits = window_outputs.logits
+                frame_outputs = model(**frame_inputs)
+                frame_logits = frame_outputs.logits
             
-            # Get predictions for this window
-            window_scores = torch.nn.functional.softmax(window_logits, dim=1)[0]
-            window_top_scores, window_top_indices = torch.topk(window_scores, k=3)
+            frame_scores = torch.nn.functional.softmax(frame_logits, dim=1)[0]
+            frame_top_scores, frame_top_indices = torch.topk(frame_scores, k=3)
             
-            window_predictions = [
+            predictions = [
                 (model.config.id2label[idx.item()], score.item())
-                for score, idx in zip(window_top_scores, window_top_indices)
+                for score, idx in zip(frame_top_scores, frame_top_indices)
             ]
             
             frame_results.append({
-                'timestamp': window_timestamp,
-                'predictions': window_predictions
+                'timestamp': timestamp,
+                'predictions': predictions
             })
-            
-    except Exception as e:
-        logger.error(f"Error in frame-by-frame analysis: {str(e)}")
-        raise RuntimeError(f"Failed to generate frame-by-frame predictions: {str(e)}")
         
-    return overall_results, frame_results
+        return overall_results, frame_results
+    except Exception as e:
+        logger.error(f"Error processing segment: {str(e)}")
+        raise RuntimeError(f"Failed to process segment: {str(e)}")
+
+def process_video_in_segments(video_file, processor, model, segment_duration=60):
+    """Process video in segments to handle longer videos efficiently."""
+    all_overall_results = []
+    all_frame_results = []
+    
+    try:
+        container = av.open(video_file)
+        stream = container.streams.video[0]
+        fps = stream.average_rate
+        frames_per_segment = int(fps * segment_duration)
+        
+        logger.info(f"Processing video with FPS: {fps}, frames per segment: {frames_per_segment}")
+        
+        # Process video in segments
+        segment_frames = []
+        segment_timestamps = []
+        current_segment = 0
+        
+        for frame in container.decode(video=0):
+            timestamp = frame.pts * float(stream.time_base)
+            
+            if timestamp > (current_segment + 1) * segment_duration:
+                # Process current segment
+                if segment_frames:
+                    logger.info(f"Processing segment {current_segment} ({len(segment_frames)} frames)")
+                    try:
+                        segment_overall, segment_frame_results = process_segment(
+                            segment_frames, 
+                            segment_timestamps,
+                            processor, 
+                            model
+                        )
+                        all_overall_results.append((current_segment * segment_duration, segment_overall))
+                        all_frame_results.extend(segment_frame_results)
+                    except Exception as e:
+                        logger.error(f"Error processing segment {current_segment}: {str(e)}")
+                
+                # Start new segment
+                segment_frames = []
+                segment_timestamps = []
+                current_segment += 1
+            
+            # Add frame to current segment
+            try:
+                frame_array = frame.to_ndarray(format="rgb24")
+                validate_frame_dimensions(frame_array)
+                resized_frame = resize_frame(frame_array, (224, 224))
+                segment_frames.append(resized_frame)
+                segment_timestamps.append(timestamp)
+            except Exception as e:
+                logger.warning(f"Failed to process frame at {timestamp}s: {str(e)}")
+                continue
+        
+        # Process final segment
+        if segment_frames:
+            logger.info(f"Processing final segment ({len(segment_frames)} frames)")
+            try:
+                segment_overall, segment_frame_results = process_segment(
+                    segment_frames,
+                    segment_timestamps,
+                    processor,
+                    model
+                )
+                all_overall_results.append((current_segment * segment_duration, segment_overall))
+                all_frame_results.extend(segment_frame_results)
+            except Exception as e:
+                logger.error(f"Error processing final segment: {str(e)}")
+        
+        return all_overall_results, all_frame_results
+    except Exception as e:
+        logger.error(f"Error processing video: {str(e)}")
+        raise RuntimeError(f"Failed to process video: {str(e)}")
+
+def process_video(video_file, processor, model, num_frames=16):
+    """Process video file using segmented processing for improved handling of longer videos."""
+    try:
+        # Use segmented processing for all videos
+        return process_video_in_segments(video_file, processor, model)
+    except Exception as e:
+        logger.error(f"Error in video processing: {str(e)}")
+        raise RuntimeError(f"Failed to process video: {str(e)}")

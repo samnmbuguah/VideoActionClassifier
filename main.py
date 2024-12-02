@@ -57,7 +57,7 @@ try:
             st.video(video_file)
             
             try:
-                # Create a temporary file to process the video using chunks
+                # Create a temporary file to process the video
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
                     # Process in chunks of 5MB
                     CHUNK_SIZE = 5 * 1024 * 1024
@@ -67,7 +67,7 @@ try:
                         tmp_file.write(chunk)
                     tmp_file_path = tmp_file.name
                 
-                # Process video with progress bar
+                # Process video with progress bar and segment status
                 with st.spinner('Processing video...'):
                     overall_results, frame_results = process_video(
                         tmp_file_path,
@@ -78,16 +78,18 @@ try:
                     # Display results
                     st.success("Analysis complete!")
                     
-                    # Display overall results
-                    st.subheader("Overall Video Analysis:")
-                    for action, confidence in overall_results:
-                        col1, col2, col3 = st.columns([2, 6, 2])
-                        with col1:
-                            st.write(action)
-                        with col2:
-                            st.progress(confidence)
-                        with col3:
-                            st.write(f"{confidence*100:.1f}%")
+                    # Display overall results by segment
+                    st.subheader("Overall Video Analysis (By Segment):")
+                    for segment_time, segment_results in overall_results:
+                        with st.expander(f"Segment at {segment_time:.1f}s"):
+                            for action, confidence in segment_results:
+                                col1, col2, col3 = st.columns([2, 6, 2])
+                                with col1:
+                                    st.write(action)
+                                with col2:
+                                    st.progress(confidence)
+                                with col3:
+                                    st.write(f"{confidence*100:.1f}%")
                     
                     # Display frame-by-frame analysis
                     st.subheader("Frame-by-Frame Analysis:")
@@ -112,21 +114,25 @@ try:
                         
                         df = pd.DataFrame(temporal_data)
                         
-                        # Create temporal chart
-                        chart = alt.Chart(df).mark_line().encode(
-                            x='timestamp:Q',
-                            y='confidence:Q',
+                        # Create temporal chart with improved visualization
+                        chart = alt.Chart(df).mark_line(
+                            interpolate='linear',
+                            point=True
+                        ).encode(
+                            x=alt.X('timestamp:Q', title='Time (seconds)'),
+                            y=alt.Y('confidence:Q', title='Confidence Score'),
                             color='action:N',
-                            tooltip=['action', 'confidence']
+                            tooltip=['action', 'confidence', 'timestamp']
                         ).properties(
                             width=700,
-                            height=400
+                            height=400,
+                            title='Action Confidence Over Time'
                         ).interactive()
                         
                         st.altair_chart(chart)
                     
                     with tab2:
-                        # Display detailed frame-by-frame predictions
+                        # Display detailed frame-by-frame predictions with timeline
                         for i, frame in enumerate(frame_results):
                             with st.expander(f"Timestamp: {frame['timestamp']:.2f}s"):
                                 for action, confidence in frame['predictions']:
@@ -157,4 +163,5 @@ of action recognition tasks.
 - For best results, upload videos that are clear and well-lit
 - The model works best with videos showing distinct actions
 - Supported formats: MP4, AVI, MOV, MKV
+- Longer videos are automatically processed in segments for better analysis
 """)
