@@ -140,9 +140,17 @@ def process_video_in_segments(video_file, processor, model, segment_duration=60)
         stream.codec_context.thread_type = av.codec.context.ThreadType.AUTO
         stream.codec_context.thread_count = 8
         
-        # Get video metadata
-        fps = float(stream.average_rate)
-        duration = float(stream.duration * stream.time_base)
+        # Get video metadata with error handling
+        try:
+            fps = float(stream.average_rate)
+            duration = float(stream.duration * stream.time_base)
+        except AttributeError as e:
+            logger.error(f"Error accessing video stream attributes: {str(e)}")
+            # Default to reasonable values if metadata can't be read
+            fps = 30.0  # Standard frame rate
+            stream_duration = sum(1 for _ in container.decode(video=0)) / fps
+            duration = float(stream_duration)
+        
         frames_per_segment = int(fps * segment_duration)
         
         all_overall_results = []
@@ -155,7 +163,7 @@ def process_video_in_segments(video_file, processor, model, segment_duration=60)
             
             # Seek to segment start
             start_time = segment_idx * segment_duration
-            container.seek(int(start_time * stream.time_base * stream.rate))
+            container.seek(int(start_time * stream.time_base * stream.average_rate))
             
             # Read frames for current segment
             for frame in container.decode(video=0):
