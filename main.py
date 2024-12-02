@@ -57,7 +57,7 @@ if video_file is not None:
             
             # Process video with progress bar
             with st.spinner('Processing video...'):
-                results = process_video(
+                overall_results, frame_results = process_video(
                     tmp_file_path,
                     st.session_state['processor'],
                     st.session_state['model']
@@ -66,11 +66,9 @@ if video_file is not None:
             # Display results
             st.success("Analysis complete!")
             
-            # Create columns for better visualization
-            st.subheader("Top 5 Predicted Actions:")
-            
-            # Display results in a nice format
-            for action, confidence in results:
+            # Display overall results
+            st.subheader("Overall Video Analysis:")
+            for action, confidence in overall_results:
                 col1, col2, col3 = st.columns([2, 6, 2])
                 with col1:
                     st.write(action)
@@ -78,6 +76,55 @@ if video_file is not None:
                     st.progress(confidence)
                 with col3:
                     st.write(f"{confidence*100:.1f}%")
+            
+            # Display frame-by-frame analysis
+            st.subheader("Frame-by-Frame Analysis:")
+            
+            # Create tabs for different visualization options
+            tab1, tab2 = st.tabs(["Temporal View", "Detailed Predictions"])
+            
+            with tab1:
+                # Create a temporal visualization of predictions
+                import altair as alt
+                import pandas as pd
+                
+                # Prepare data for visualization
+                temporal_data = []
+                for frame in frame_results:
+                    for action, confidence in frame['predictions']:
+                        temporal_data.append({
+                            'timestamp': frame['timestamp'],
+                            'action': action,
+                            'confidence': confidence
+                        })
+                
+                df = pd.DataFrame(temporal_data)
+                
+                # Create temporal chart
+                chart = alt.Chart(df).mark_line().encode(
+                    x='timestamp:Q',
+                    y='confidence:Q',
+                    color='action:N',
+                    tooltip=['action', 'confidence']
+                ).properties(
+                    width=700,
+                    height=400
+                ).interactive()
+                
+                st.altair_chart(chart)
+            
+            with tab2:
+                # Display detailed frame-by-frame predictions
+                for i, frame in enumerate(frame_results):
+                    with st.expander(f"Timestamp: {frame['timestamp']:.2f}s"):
+                        for action, confidence in frame['predictions']:
+                            cols = st.columns([2, 6, 2])
+                            with cols[0]:
+                                st.write(action)
+                            with cols[1]:
+                                st.progress(confidence)
+                            with cols[2]:
+                                st.write(f"{confidence*100:.1f}%")
                     
         except Exception as e:
             st.error(f"An error occurred while processing the video: {str(e)}")
