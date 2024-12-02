@@ -1,6 +1,6 @@
 import streamlit as st
 import tempfile
-from utils import load_model, process_video
+from utils import load_model, process_video, get_available_models
 
 # Page configuration
 st.set_page_config(
@@ -13,13 +13,27 @@ st.set_page_config(
 st.title("🎥 Video Action Classification")
 st.markdown("""
 Upload a video to identify the actions being performed. 
-The model will analyze the video and provide predictions with confidence scores.
+Select a model and the system will analyze the video to provide predictions with confidence scores.
 """)
 
-# Initialize session state for model loading
-if 'model' not in st.session_state:
+# Get available models
+available_models = get_available_models()
+
+# Add model selector
+selected_model = st.selectbox(
+    "Select Model",
+    options=list(available_models.keys()),
+    help="Choose the model to use for video classification"
+)
+
+# Display model description
+st.info(f"**Model Details:** {available_models[selected_model]}")
+
+# Initialize or update session state for model loading
+if 'model' not in st.session_state or st.session_state.get('current_model') != selected_model:
     with st.spinner('Loading model... This may take a minute...'):
-        st.session_state['processor'], st.session_state['model'] = load_model()
+        st.session_state['processor'], st.session_state['model'] = load_model(selected_model)
+        st.session_state['current_model'] = selected_model
     st.success('Model loaded successfully!')
 
 # File uploader
