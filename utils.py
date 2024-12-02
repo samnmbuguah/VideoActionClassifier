@@ -5,7 +5,6 @@ import logging
 from typing import List, Dict, Tuple
 from transformers import VideoMAEImageProcessor, VideoMAEForVideoClassification
 from PIL import Image
-import cv2
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
