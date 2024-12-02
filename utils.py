@@ -70,7 +70,7 @@ def process_video(video_file, processor, model, num_frames=16, frame_window=8):
     frame_timestamps = []
     for i, frame in enumerate(container.decode(video=0)):
         if i % sampling_rate == 0 and len(frames) < num_frames:
-            frames.append(frame.to_ndarray(format="rgb"))
+            frames.append(frame.to_ndarray(format="rgb24"))
             frame_timestamps.append(frame.pts * float(video_stream.time_base))
     
     # If we don't have enough frames, duplicate the last frame
