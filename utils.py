@@ -72,20 +72,25 @@ def validate_frame_dimensions(frame: np.ndarray) -> None:
 
 def process_segment(frames, timestamps, processor, model, num_frames=16):
     """Process a segment of video frames and return predictions."""
+    if not frames or not timestamps:
+        raise ValueError("Empty frames or timestamps")
+    
     try:
-        # Sample frames evenly from the segment
-        if len(frames) > num_frames:
+        # Ensure we have enough frames
+        if len(frames) < num_frames:
+            # Duplicate last frame if needed
+            frames.extend([frames[-1]] * (num_frames - len(frames)))
+            timestamps.extend([timestamps[-1]] * (num_frames - len(timestamps)))
+        elif len(frames) > num_frames:
+            # Sample frames evenly
             indices = np.linspace(0, len(frames)-1, num_frames, dtype=int)
             frames = [frames[i] for i in indices]
             timestamps = [timestamps[i] for i in indices]
         
-        # Ensure minimum number of frames
-        while len(frames) < num_frames:
-            frames.append(frames[-1])
-            timestamps.append(timestamps[-1] if timestamps else 0)
+        # Process frames in batches
+        batch_frames = np.stack(frames)
+        inputs = processor(list(batch_frames), return_tensors="pt")
         
-        # Process frames
-        inputs = processor(frames, return_tensors="pt")
         with torch.no_grad():
             outputs = model(**inputs)
             logits = outputs.logits
@@ -99,7 +104,7 @@ def process_segment(frames, timestamps, processor, model, num_frames=16):
             for score, idx in zip(top_scores, top_indices)
         ]
         
-        # Process frame-by-frame results
+        # Process individual frames
         frame_results = []
         for i, timestamp in enumerate(timestamps):
             frame_inputs = processor([frames[i]], return_tensors="pt")
@@ -116,82 +121,69 @@ def process_segment(frames, timestamps, processor, model, num_frames=16):
             ]
             
             frame_results.append({
-                'timestamp': timestamp,
+                'timestamp': float(timestamp),
                 'predictions': predictions
             })
         
         return overall_results, frame_results
     except Exception as e:
-        logger.error(f"Error processing segment: {str(e)}")
+        logger.error(f"Error in process_segment: {str(e)}")
         raise RuntimeError(f"Failed to process segment: {str(e)}")
 
 def process_video_in_segments(video_file, processor, model, segment_duration=60):
     """Process video in segments to handle longer videos efficiently."""
-    all_overall_results = []
-    all_frame_results = []
-    
     try:
         container = av.open(video_file)
         stream = container.streams.video[0]
-        fps = stream.average_rate
+        
+        # Configure stream for better performance
+        stream.codec_context.thread_type = av.codec.context.ThreadType.AUTO
+        stream.codec_context.thread_count = 8
+        
+        # Get video metadata
+        fps = float(stream.average_rate)
+        duration = float(stream.duration * stream.time_base)
         frames_per_segment = int(fps * segment_duration)
         
-        logger.info(f"Processing video with FPS: {fps}, frames per segment: {frames_per_segment}")
+        all_overall_results = []
+        all_frame_results = []
         
         # Process video in segments
-        segment_frames = []
-        segment_timestamps = []
-        current_segment = 0
-        
-        for frame in container.decode(video=0):
-            timestamp = frame.pts * float(stream.time_base)
+        for segment_idx in range(int(duration / segment_duration) + 1):
+            segment_frames = []
+            segment_timestamps = []
             
-            if timestamp > (current_segment + 1) * segment_duration:
-                # Process current segment
-                if segment_frames:
-                    logger.info(f"Processing segment {current_segment} ({len(segment_frames)} frames)")
-                    try:
-                        segment_overall, segment_frame_results = process_segment(
-                            segment_frames, 
-                            segment_timestamps,
-                            processor, 
-                            model
-                        )
-                        all_overall_results.append((current_segment * segment_duration, segment_overall))
-                        all_frame_results.extend(segment_frame_results)
-                    except Exception as e:
-                        logger.error(f"Error processing segment {current_segment}: {str(e)}")
-                
-                # Start new segment
-                segment_frames = []
-                segment_timestamps = []
-                current_segment += 1
+            # Seek to segment start
+            start_time = segment_idx * segment_duration
+            container.seek(int(start_time * stream.time_base * stream.rate))
             
-            # Add frame to current segment
-            try:
-                frame_array = frame.to_ndarray(format="rgb24")
-                validate_frame_dimensions(frame_array)
-                resized_frame = resize_frame(frame_array, (224, 224))
-                segment_frames.append(resized_frame)
-                segment_timestamps.append(timestamp)
-            except Exception as e:
-                logger.warning(f"Failed to process frame at {timestamp}s: {str(e)}")
-                continue
-        
-        # Process final segment
-        if segment_frames:
-            logger.info(f"Processing final segment ({len(segment_frames)} frames)")
-            try:
-                segment_overall, segment_frame_results = process_segment(
-                    segment_frames,
-                    segment_timestamps,
-                    processor,
-                    model
-                )
-                all_overall_results.append((current_segment * segment_duration, segment_overall))
-                all_frame_results.extend(segment_frame_results)
-            except Exception as e:
-                logger.error(f"Error processing final segment: {str(e)}")
+            # Read frames for current segment
+            for frame in container.decode(video=0):
+                timestamp = frame.pts * float(stream.time_base)
+                if timestamp >= (segment_idx + 1) * segment_duration:
+                    break
+                    
+                try:
+                    frame_array = frame.to_ndarray(format="rgb24")
+                    resized_frame = resize_frame(frame_array, (224, 224))
+                    segment_frames.append(resized_frame)
+                    segment_timestamps.append(timestamp)
+                except Exception as e:
+                    logger.warning(f"Skipped frame at {timestamp}s: {str(e)}")
+                    continue
+            
+            if segment_frames:
+                try:
+                    segment_overall, segment_frame_results = process_segment(
+                        segment_frames,
+                        segment_timestamps,
+                        processor,
+                        model
+                    )
+                    all_overall_results.append((start_time, segment_overall))
+                    all_frame_results.extend(segment_frame_results)
+                except Exception as e:
+                    logger.error(f"Error processing segment {segment_idx}: {str(e)}")
         
         return all_overall_results, all_frame_results
     except Exception as e:
