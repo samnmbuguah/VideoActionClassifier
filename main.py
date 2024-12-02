@@ -56,26 +56,24 @@ try:
             # Display uploaded video
             st.video(video_file)
             
-            # Process button
-            if st.button("Analyze Video"):
-                try:
-                    # Create a temporary file to process the video using chunks
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
-                        # Process in chunks of 5MB
-                        CHUNK_SIZE = 5 * 1024 * 1024
-                        video_data = video_file.getvalue()
-                        for i in range(0, len(video_data), CHUNK_SIZE):
-                            chunk = video_data[i:i + CHUNK_SIZE]
-                            tmp_file.write(chunk)
-                        tmp_file_path = tmp_file.name
-                    
-                    # Process video with progress bar
-                    with st.spinner('Processing video...'):
-                        overall_results, frame_results = process_video(
-                            tmp_file_path,
-                            st.session_state['processor'],
-                            st.session_state['model']
-                        )
+            try:
+                # Create a temporary file to process the video using chunks
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
+                    # Process in chunks of 5MB
+                    CHUNK_SIZE = 5 * 1024 * 1024
+                    video_data = video_file.getvalue()
+                    for i in range(0, len(video_data), CHUNK_SIZE):
+                        chunk = video_data[i:i + CHUNK_SIZE]
+                        tmp_file.write(chunk)
+                    tmp_file_path = tmp_file.name
+                
+                # Process video with progress bar
+                with st.spinner('Processing video...'):
+                    overall_results, frame_results = process_video(
+                        tmp_file_path,
+                        st.session_state['processor'],
+                        st.session_state['model']
+                    )
                     
                     # Display results
                     st.success("Analysis complete!")
@@ -139,9 +137,10 @@ try:
                                         st.progress(confidence)
                                     with cols[2]:
                                         st.write(f"{confidence*100:.1f}%")
-                except Exception as e:
-                    st.error(f"An error occurred while processing the video: {str(e)}")
-                    st.error("Please try uploading a different video file.")
+            
+            except Exception as e:
+                st.error(f"An error occurred while processing the video: {str(e)}")
+                st.error("Please try uploading a different video file.")
 
 except Exception as e:
     st.error(f"An error occurred during file upload: {str(e)}")
@@ -150,12 +149,12 @@ except Exception as e:
 st.markdown("---")
 st.markdown("""
 ### About
-This application uses a pre-trained video classification model from Hugging Face 
-to identify actions in videos. The model is trained on the Kinetics-400 dataset 
-and can recognize various human actions.
+This application uses pre-trained video classification models from Hugging Face 
+to identify actions in videos. Different models are available for various types
+of action recognition tasks.
 
 ### Tips
 - For best results, upload videos that are clear and well-lit
-- The model works best with videos showing distinct human actions
+- The model works best with videos showing distinct actions
 - Supported formats: MP4, AVI, MOV, MKV
 """)
