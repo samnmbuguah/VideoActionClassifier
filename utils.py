@@ -70,38 +70,42 @@ def validate_frame_dimensions(frame: np.ndarray) -> None:
     if frame.shape[2] != 3:
         raise ValueError(f"Invalid color channels: expected 3 channels (RGB), got {frame.shape[2]}")
 
-def process_segment(frames, timestamps, processor, model, num_frames=32):
-    """Process a segment of video frames and return predictions."""
-    if not frames or not timestamps:
-        raise ValueError("Empty frames or timestamps")
-    
+def process_video(video_file, processor, model, num_frames=32):
+    """Process video file by sampling frames across the entire duration."""
     try:
-        # Ensure minimum number of frames (32 for temporal window)
-        while len(frames) < 32:  # Increased from 16 to 32
-            frames.extend(frames[:])  # Duplicate existing frames
-            timestamps.extend(timestamps[:])
+        frames = []
+        timestamps = []
+        container = av.open(video_file)
+        stream = container.streams.video[0]
         
-        if len(frames) > 32:
-            # Sample 32 frames evenly
-            indices = np.linspace(0, len(frames)-1, 32, dtype=int)
-            frames = [frames[i] for i in indices]
-            timestamps = [timestamps[i] for i in indices]
+        # Configure stream for performance
+        stream.codec_context.thread_type = av.codec.context.ThreadType.AUTO
+        stream.codec_context.thread_count = 8
         
-        # Stack frames with proper dimensions
-        batch_frames = np.stack(frames)  # Shape: (32, 224, 224, 3)
-        inputs = processor(list(batch_frames), return_tensors="pt")
+        # Calculate frame sampling interval
+        total_frames = stream.frames
+        interval = max(total_frames // num_frames, 1)
         
+        # Extract frames
+        for frame_idx, frame in enumerate(container.decode(video=0)):
+            if frame_idx % interval == 0 and len(frames) < num_frames:
+                frame_array = frame.to_ndarray(format="rgb24")
+                resized_frame = resize_frame(frame_array, (224, 224))
+                frames.append(resized_frame)
+                timestamps.append(float(frame.pts * stream.time_base))
+        
+        # Process frames
+        inputs = processor(frames, return_tensors="pt")
         with torch.no_grad():
             outputs = model(**inputs)
             logits = outputs.logits
         
-        # Get predictions
+        # Get overall predictions
         scores = torch.nn.functional.softmax(logits, dim=1)[0]
         top_scores, top_indices = torch.topk(scores, k=5)
-        
         overall_results = [
-            (model.config.id2label[idx.item()], score.item())
-            for score, idx in zip(top_scores, top_indices)
+            [(model.config.id2label[idx.item()], score.item())
+             for score, idx in zip(top_scores, top_indices)]
         ]
         
         # Process individual frames
@@ -121,88 +125,12 @@ def process_segment(frames, timestamps, processor, model, num_frames=32):
             ]
             
             frame_results.append({
-                'timestamp': float(timestamp),
+                'timestamp': timestamp,
                 'predictions': predictions
             })
         
         return overall_results, frame_results
-    except Exception as e:
-        logger.error(f"Error in process_segment: {str(e)}")
-        raise RuntimeError(f"Failed to process segment: {str(e)}")
-
-def process_video_in_segments(video_file, processor, model, segment_duration=60):
-    """Process video in segments to handle longer videos efficiently."""
-    try:
-        container = av.open(video_file)
-        stream = container.streams.video[0]
         
-        # Configure stream for better performance
-        stream.codec_context.thread_type = av.codec.context.ThreadType.AUTO
-        stream.codec_context.thread_count = 8
-        
-        # Get video metadata with error handling
-        try:
-            fps = float(stream.average_rate)
-            duration = float(stream.duration * stream.time_base)
-        except AttributeError as e:
-            logger.error(f"Error accessing video stream attributes: {str(e)}")
-            # Default to reasonable values if metadata can't be read
-            fps = 30.0  # Standard frame rate
-            stream_duration = sum(1 for _ in container.decode(video=0)) / fps
-            duration = float(stream_duration)
-        
-        frames_per_segment = max(int(fps * segment_duration), 32)  # Ensure minimum 32 frames
-        
-        all_overall_results = []
-        all_frame_results = []
-        
-        # Process video in segments
-        for segment_idx in range(int(duration / segment_duration) + 1):
-            segment_frames = []
-            segment_timestamps = []
-            
-            # Seek to segment start
-            start_time = segment_idx * segment_duration
-            container.seek(int(start_time * stream.time_base * stream.average_rate))
-            
-            # Read frames for current segment
-            for frame in container.decode(video=0):
-                timestamp = frame.pts * float(stream.time_base)
-                if timestamp >= (segment_idx + 1) * segment_duration:
-                    break
-                    
-                try:
-                    frame_array = frame.to_ndarray(format="rgb24")
-                    resized_frame = resize_frame(frame_array, (224, 224))
-                    segment_frames.append(resized_frame)
-                    segment_timestamps.append(timestamp)
-                except Exception as e:
-                    logger.warning(f"Skipped frame at {timestamp}s: {str(e)}")
-                    continue
-            
-            if segment_frames:
-                try:
-                    segment_overall, segment_frame_results = process_segment(
-                        segment_frames,
-                        segment_timestamps,
-                        processor,
-                        model
-                    )
-                    all_overall_results.append((start_time, segment_overall))
-                    all_frame_results.extend(segment_frame_results)
-                except Exception as e:
-                    logger.error(f"Error processing segment {segment_idx}: {str(e)}")
-        
-        return all_overall_results, all_frame_results
-    except Exception as e:
-        logger.error(f"Error processing video: {str(e)}")
-        raise RuntimeError(f"Failed to process video: {str(e)}")
-
-def process_video(video_file, processor, model, num_frames=16):
-    """Process video file using segmented processing for improved handling of longer videos."""
-    try:
-        # Use segmented processing for all videos
-        return process_video_in_segments(video_file, processor, model)
     except Exception as e:
         logger.error(f"Error in video processing: {str(e)}")
         raise RuntimeError(f"Failed to process video: {str(e)}")
