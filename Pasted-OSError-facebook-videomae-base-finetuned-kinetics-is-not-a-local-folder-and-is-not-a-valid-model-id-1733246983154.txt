@@ -1,0 +1,21 @@
+OSError: facebook/videomae-base-finetuned-kinetics is not a local folder and is not a valid model identifier listed on 'https://huggingface.co/models' If this is a private repository, make sure to pass a token having permission to this repo either by logging in with `huggingface-cli login` or by passing `token=<your_token>`
+Traceback:
+File "/home/runner/VideoActionClassifier/.pythonlibs/lib/python3.11/site-packages/streamlit/runtime/scriptrunner/exec_code.py", line 88, in exec_func_with_error_handling
+    result = func()
+             ^^^^^^
+File "/home/runner/VideoActionClassifier/.pythonlibs/lib/python3.11/site-packages/streamlit/runtime/scriptrunner/script_runner.py", line 579, in code_to_exec
+    exec(code, module.__dict__)
+File "/home/runner/VideoActionClassifier/main.py", line 35, in <module>
+    st.session_state['processor'], st.session_state['model'] = load_model(selected_model)
+                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/runner/VideoActionClassifier/utils.py", line 37, in load_model
+    processor = VideoMAEImageProcessor.from_pretrained(model_info["processor"])
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/runner/VideoActionClassifier/.pythonlibs/lib/python3.11/site-packages/transformers/image_processing_base.py", line 206, in from_pretrained
+    image_processor_dict, kwargs = cls.get_image_processor_dict(pretrained_model_name_or_path, **kwargs)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/home/runner/VideoActionClassifier/.pythonlibs/lib/python3.11/site-packages/transformers/image_processing_base.py", line 335, in get_image_processor_dict
+    resolved_image_processor_file = cached_file(
+                                    ^^^^^^^^^^^^
+File "/home/runner/VideoActionClassifier/.pythonlibs/lib/python3.11/site-packages/transformers/utils/hub.py", line 426, in cached_file
+    raise EnvironmentError(

@@ -12,15 +12,15 @@ logger = logging.getLogger(__name__)
 
 # Dictionary of available models with their details
 AVAILABLE_MODELS: Dict[str, Dict[str, str]] = {
-    "VideoMAE Kinetics": {
-        "processor": "facebook/videomae-base-finetuned-kinetics",
-        "model": "facebook/videomae-base-finetuned-kinetics",
-        "description": "Trained on Kinetics-400 dataset for general action recognition"
+    "VideoMAE Base": {
+        "processor": "MCG-NJU/videomae-base",
+        "model": "MCG-NJU/videomae-base",
+        "description": "Base VideoMAE model for video understanding"
     },
-    "VideoMAE SSv2": {
-        "processor": "facebook/videomae-base-finetuned-ssv2",
-        "model": "facebook/videomae-base-finetuned-ssv2",
-        "description": "Trained on Something-Something-V2 dataset for fine-grained action recognition"
+    "VideoMAE Large": {
+        "processor": "MCG-NJU/videomae-large",
+        "model": "MCG-NJU/videomae-large",
+        "description": "Large VideoMAE model with enhanced capabilities"
     }
 }
 
@@ -28,15 +28,25 @@ def get_available_models() -> Dict[str, str]:
     """Return a dictionary of available models and their descriptions."""
     return {name: info["description"] for name, info in AVAILABLE_MODELS.items()}
 
-def load_model(model_name: str = "VideoMAE Kinetics") -> Tuple[VideoMAEImageProcessor, VideoMAEForVideoClassification]:
+def load_model(model_name: str = "VideoMAE Base") -> Tuple[VideoMAEImageProcessor, VideoMAEForVideoClassification]:
     """Load the video classification model and processor."""
     if model_name not in AVAILABLE_MODELS:
         raise ValueError(f"Model {model_name} not found. Available models: {list(AVAILABLE_MODELS.keys())}")
     
     model_info = AVAILABLE_MODELS[model_name]
-    processor = VideoMAEImageProcessor.from_pretrained(model_info["processor"])
-    model = VideoMAEForVideoClassification.from_pretrained(model_info["model"])
-    return processor, model
+    try:
+        processor = VideoMAEImageProcessor.from_pretrained(
+            model_info["processor"],
+            trust_remote_code=True
+        )
+        model = VideoMAEForVideoClassification.from_pretrained(
+            model_info["model"],
+            trust_remote_code=True
+        )
+        return processor, model
+    except Exception as e:
+        logger.error(f"Error loading model: {str(e)}")
+        raise RuntimeError(f"Failed to load model {model_name}: {str(e)}")
 
 def resize_frame(frame: np.ndarray, target_size: tuple = (224, 224)) -> np.ndarray:
     """Resize frame to target size while maintaining aspect ratio."""
