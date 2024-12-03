@@ -13,19 +13,14 @@ logger = logging.getLogger(__name__)
 # Dictionary of available models with their details
 AVAILABLE_MODELS: Dict[str, Dict[str, str]] = {
     "VideoMAE Kinetics": {
-        "processor": "MCG-NJU/videomae-base-finetuned-kinetics",
-        "model": "MCG-NJU/videomae-base-finetuned-kinetics",
+        "processor": "facebook/videomae-base-finetuned-kinetics",
+        "model": "facebook/videomae-base-finetuned-kinetics",
         "description": "Trained on Kinetics-400 dataset for general action recognition"
     },
     "VideoMAE SSv2": {
-        "processor": "MCG-NJU/videomae-base-finetuned-ssv2",
-        "model": "MCG-NJU/videomae-base-finetuned-ssv2",
+        "processor": "facebook/videomae-base-finetuned-ssv2",
+        "model": "facebook/videomae-base-finetuned-ssv2",
         "description": "Trained on Something-Something-V2 dataset for fine-grained action recognition"
-    },
-    "VideoMAE UCF101": {
-        "processor": "MCG-NJU/videomae-base-finetuned-ucf101",
-        "model": "MCG-NJU/videomae-base-finetuned-ucf101",
-        "description": "Trained on UCF101 dataset for sports and daily activities"
     }
 }
 
@@ -70,8 +65,7 @@ def validate_frame_dimensions(frame: np.ndarray) -> None:
     if frame.shape[2] != 3:
         raise ValueError(f"Invalid color channels: expected 3 channels (RGB), got {frame.shape[2]}")
 
-def process_video(video_file, processor, model, num_frames=32):
-    """Process video file by sampling frames across the entire duration."""
+def process_video(video_file, processor, model, num_frames=16):
     try:
         frames = []
         timestamps = []
@@ -83,54 +77,74 @@ def process_video(video_file, processor, model, num_frames=32):
         stream.codec_context.thread_count = 8
         
         # Calculate frame sampling interval
-        total_frames = stream.frames
-        interval = max(total_frames // num_frames, 1)
+        frame_count = 0
+        for frame in container.decode(video=0):
+            frame_count += 1
+        container.seek(0)
         
-        # Extract frames
+        interval = max(frame_count // num_frames, 1)
+        
+        # Extract frames with proper dimension handling
         for frame_idx, frame in enumerate(container.decode(video=0)):
             if frame_idx % interval == 0 and len(frames) < num_frames:
+                # Ensure consistent frame dimensions
                 frame_array = frame.to_ndarray(format="rgb24")
                 resized_frame = resize_frame(frame_array, (224, 224))
+                validate_frame_dimensions(resized_frame)
                 frames.append(resized_frame)
                 timestamps.append(float(frame.pts * stream.time_base))
         
-        # Process frames
-        inputs = processor(frames, return_tensors="pt")
-        with torch.no_grad():
-            outputs = model(**inputs)
-            logits = outputs.logits
+        # Ensure we have exactly num_frames frames
+        while len(frames) < num_frames:
+            frames.append(frames[-1])
+            timestamps.append(timestamps[-1])
         
-        # Get overall predictions
-        scores = torch.nn.functional.softmax(logits, dim=1)[0]
-        top_scores, top_indices = torch.topk(scores, k=5)
-        overall_results = [
-            [(model.config.id2label[idx.item()], score.item())
-             for score, idx in zip(top_scores, top_indices)]
-        ]
+        frames = frames[:num_frames]  # Trim to exact number needed
+        timestamps = timestamps[:num_frames]
         
-        # Process individual frames
-        frame_results = []
-        for i, timestamp in enumerate(timestamps):
-            frame_inputs = processor([frames[i]], return_tensors="pt")
+        # Create input batch with proper dimensions
+        try:
+            inputs = processor(frames, return_tensors="pt")
             with torch.no_grad():
-                frame_outputs = model(**frame_inputs)
-                frame_logits = frame_outputs.logits
+                outputs = model(**inputs)
+                logits = outputs.logits
             
-            frame_scores = torch.nn.functional.softmax(frame_logits, dim=1)[0]
-            frame_top_scores, frame_top_indices = torch.topk(frame_scores, k=3)
+            # Process predictions
+            scores = torch.nn.functional.softmax(logits, dim=1)[0]
+            top_scores, top_indices = torch.topk(scores, k=5)
             
-            predictions = [
-                (model.config.id2label[idx.item()], score.item())
-                for score, idx in zip(frame_top_scores, frame_top_indices)
+            overall_results = [
+                [(model.config.id2label[idx.item()], score.item())
+                 for score, idx in zip(top_scores, top_indices)]
             ]
             
-            frame_results.append({
-                'timestamp': timestamp,
-                'predictions': predictions
-            })
-        
-        return overall_results, frame_results
-        
+            # Process individual frames
+            frame_results = []
+            for i, timestamp in enumerate(timestamps):
+                frame_inputs = processor([frames[i]], return_tensors="pt")
+                with torch.no_grad():
+                    frame_outputs = model(**frame_inputs)
+                    frame_logits = frame_outputs.logits
+                
+                frame_scores = torch.nn.functional.softmax(frame_logits, dim=1)[0]
+                frame_top_scores, frame_top_indices = torch.topk(frame_scores, k=3)
+                
+                predictions = [
+                    (model.config.id2label[idx.item()], score.item())
+                    for score, idx in zip(frame_top_scores, frame_top_indices)
+                ]
+                
+                frame_results.append({
+                    'timestamp': timestamp,
+                    'predictions': predictions
+                })
+            
+            return overall_results, frame_results
+            
+        except Exception as e:
+            logger.error(f"Error processing tensors: {str(e)}")
+            raise RuntimeError(f"Failed to process video frames: {str(e)}")
+            
     except Exception as e:
         logger.error(f"Error in video processing: {str(e)}")
         raise RuntimeError(f"Failed to process video: {str(e)}")
