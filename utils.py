@@ -64,17 +64,6 @@ def resize_frame(frame: np.ndarray, target_size: tuple = (224, 224)) -> np.ndarr
         logger.error(f"Error resizing frame: {str(e)}")
         raise ValueError(f"Failed to resize frame: {str(e)}")
 
-def validate_frame_dimensions(frame: np.ndarray) -> None:
-    """Validate frame dimensions and format."""
-    if not isinstance(frame, np.ndarray):
-        raise ValueError("Frame must be a numpy array")
-    
-    if len(frame.shape) != 3:
-        raise ValueError(f"Invalid frame dimensions: expected 3 dimensions, got {len(frame.shape)}")
-        
-    if frame.shape[2] != 3:
-        raise ValueError(f"Invalid color channels: expected 3 channels (RGB), got {frame.shape[2]}")
-
 def process_video(video_file, processor, model, num_frames=16):
     try:
         frames = []
@@ -86,64 +75,47 @@ def process_video(video_file, processor, model, num_frames=16):
         stream.codec_context.thread_type = av.codec.context.ThreadType.AUTO
         stream.codec_context.thread_count = 8
         
-        # Calculate frame sampling interval
-        frame_count = 0
+        # Extract frames with temporal window consideration
         for frame in container.decode(video=0):
-            frame_count += 1
-        container.seek(0)
+            frame_array = frame.to_ndarray(format="rgb24")
+            resized_frame = resize_frame(frame_array, (224, 224))
+            frames.append(resized_frame)
+            timestamps.append(float(frame.pts * stream.time_base))
+            
+            if len(frames) >= num_frames:
+                break
         
-        interval = max(frame_count // num_frames, 1)
-        
-        # Extract frames with proper dimension handling
-        for frame_idx, frame in enumerate(container.decode(video=0)):
-            if frame_idx % interval == 0 and len(frames) < num_frames:
-                # Ensure consistent frame dimensions
-                frame_array = frame.to_ndarray(format="rgb24")
-                resized_frame = resize_frame(frame_array, (224, 224))
-                validate_frame_dimensions(resized_frame)
-                frames.append(resized_frame)
-                timestamps.append(float(frame.pts * stream.time_base))
-        
-        # Ensure we have exactly num_frames frames
+        # Ensure minimum number of frames
         while len(frames) < num_frames:
             frames.append(frames[-1])
             timestamps.append(timestamps[-1])
         
-        frames = frames[:num_frames]  # Trim to exact number needed
-        timestamps = timestamps[:num_frames]
+        # Stack frames for temporal processing (B, C, T, H, W)
+        frames_array = np.stack(frames)  # Shape: (T, H, W, C)
+        frames_array = np.transpose(frames_array, (3, 0, 1, 2))  # Shape: (C, T, H, W)
+        frames_array = np.expand_dims(frames_array, 0)  # Shape: (B, C, T, H, W)
         
-        # Create input batch with proper dimensions
+        # Process temporal window
         try:
             inputs = processor(frames, return_tensors="pt")
             with torch.no_grad():
                 outputs = model(**inputs)
                 logits = outputs.logits
             
-            # Get number of classes from model config
-            num_classes = len(model.config.id2label)
-            # Use smaller k for top predictions
-            k_overall = min(5, num_classes)
-            k_frame = min(3, num_classes)
-            
             # Process predictions
             scores = torch.nn.functional.softmax(logits, dim=1)[0]
-            top_scores, top_indices = torch.topk(scores, k=k_overall)
+            top_scores, top_indices = torch.topk(scores, k=min(5, len(model.config.id2label)))
             
             overall_results = [
                 [(model.config.id2label[idx.item()], score.item())
                  for score, idx in zip(top_scores, top_indices)]
             ]
             
-            # Process individual frames
+            # Process frame-level predictions
             frame_results = []
             for i, timestamp in enumerate(timestamps):
-                frame_inputs = processor([frames[i]], return_tensors="pt")
-                with torch.no_grad():
-                    frame_outputs = model(**frame_inputs)
-                    frame_logits = frame_outputs.logits
-                
-                frame_scores = torch.nn.functional.softmax(frame_logits, dim=1)[0]
-                frame_top_scores, frame_top_indices = torch.topk(frame_scores, k=k_frame)
+                frame_scores = torch.nn.functional.softmax(logits[:, :, i], dim=1)[0]
+                frame_top_scores, frame_top_indices = torch.topk(frame_scores, k=min(3, len(model.config.id2label)))
                 
                 predictions = [
                     (model.config.id2label[idx.item()], score.item())
