@@ -48,7 +48,7 @@ def load_model(model_name: str = "VideoMAE Base") -> Tuple[VideoMAEImageProcesso
         logger.error(f"Error loading model: {str(e)}")
         raise RuntimeError(f"Failed to load model {model_name}: {str(e)}")
 
-def resize_frame(frame: np.ndarray, target_size: tuple = (256, 256)) -> np.ndarray:
+def resize_frame(frame: np.ndarray, target_size: tuple = (384, 384)) -> np.ndarray:
     """Resize frame to target size while maintaining aspect ratio."""
     if not isinstance(frame, np.ndarray):
         raise ValueError("Input frame must be a numpy array")
@@ -71,80 +71,74 @@ def process_video(video_file, processor, model, num_frames=16):
         container = av.open(video_file)
         stream = container.streams.video[0]
         
-        # Configure stream for performance
+        # Configure stream
         stream.codec_context.thread_type = av.codec.context.ThreadType.AUTO
         stream.codec_context.thread_count = 8
         
-        # Calculate total frames for proper sampling
-        total_frames = stream.frames
-        if total_frames == 0:  # If total_frames is not available
-            total_frames = sum(1 for _ in container.decode(video=0))
-            container.seek(0)  # Reset stream position
+        # Extract frames with larger size
+        for frame in container.decode(video=0):
+            frame_array = frame.to_ndarray(format="rgb24")
+            resized_frame = resize_frame(frame_array, (384, 384))
+            frames.append(resized_frame)
+            timestamps.append(float(frame.pts * stream.time_base))
+            
+            if len(frames) >= num_frames:
+                break
         
-        # Calculate sampling interval
-        interval = max(total_frames // num_frames, 1)
-        
-        # Extract frames
-        for frame_idx, frame in enumerate(container.decode(video=0)):
-            if frame_idx % interval == 0 and len(frames) < num_frames:
-                frame_array = frame.to_ndarray(format="rgb24")
-                # Resize to slightly larger size to accommodate kernel
-                resized_frame = resize_frame(frame_array, (256, 256))
-                frames.append(resized_frame)
-                timestamps.append(float(frame.pts * stream.time_base))
-        
-        # Ensure we have enough frames
+        # Ensure minimum frames
         while len(frames) < num_frames:
             frames.append(frames[-1])
             timestamps.append(timestamps[-1])
         
-        # Prepare frames for model (B, C, T, H, W format)
-        frames_array = np.stack(frames)  # (T, H, W, C)
-        frames_array = np.transpose(frames_array, (3, 0, 1, 2))  # (C, T, H, W)
-        frames_array = np.expand_dims(frames_array, 0)  # (1, C, T, H, W)
-        
-        # Process frames
-        inputs = processor(frames, return_tensors="pt")
-        with torch.no_grad():
-            outputs = model(**inputs)
-            logits = outputs.logits
-        
-        # Get predictions
-        scores = torch.nn.functional.softmax(logits, dim=1)[0]
-        top_scores, top_indices = torch.topk(scores, k=min(5, len(model.config.id2label)))
-        
-        overall_results = [
-            [(model.config.id2label[idx.item()], score.item())
-             for score, idx in zip(top_scores, top_indices)]
-        ]
-        
-        # Process individual frames
-        frame_results = []
-        for i, (frame, timestamp) in enumerate(zip(frames, timestamps)):
-            # Process single frame
-            frame_inputs = processor([frame], return_tensors="pt")
+        # Process frames in batches
+        try:
+            # Process all frames together
+            inputs = processor(frames, return_tensors="pt", data_format="channels_first")
+            
             with torch.no_grad():
-                frame_outputs = model(**frame_inputs)
-                frame_logits = frame_outputs.logits
+                outputs = model(**inputs)
+                logits = outputs.logits
             
-            frame_scores = torch.nn.functional.softmax(frame_logits, dim=1)[0]
-            frame_top_scores, frame_top_indices = torch.topk(
-                frame_scores,
-                k=min(3, len(model.config.id2label))
-            )
+            # Get predictions
+            scores = torch.nn.functional.softmax(logits, dim=1)[0]
+            top_scores, top_indices = torch.topk(scores, k=min(5, len(model.config.id2label)))
             
-            predictions = [
-                (model.config.id2label[idx.item()], score.item())
-                for score, idx in zip(frame_top_scores, frame_top_indices)
+            overall_results = [
+                [(model.config.id2label[idx.item()], score.item())
+                 for score, idx in zip(top_scores, top_indices)]
             ]
             
-            frame_results.append({
-                'timestamp': timestamp,
-                'predictions': predictions
-            })
-        
-        return overall_results, frame_results
-        
+            # Process individual frames
+            frame_results = []
+            for i, (frame, timestamp) in enumerate(zip(frames, timestamps)):
+                frame_inputs = processor([frame], return_tensors="pt", data_format="channels_first")
+                
+                with torch.no_grad():
+                    frame_outputs = model(**frame_inputs)
+                    frame_logits = frame_outputs.logits
+                
+                frame_scores = torch.nn.functional.softmax(frame_logits, dim=1)[0]
+                frame_top_scores, frame_top_indices = torch.topk(
+                    frame_scores,
+                    k=min(3, len(model.config.id2label))
+                )
+                
+                predictions = [
+                    (model.config.id2label[idx.item()], score.item())
+                    for score, idx in zip(frame_top_scores, frame_top_indices)
+                ]
+                
+                frame_results.append({
+                    'timestamp': timestamp,
+                    'predictions': predictions
+                })
+            
+            return overall_results, frame_results
+            
+        except Exception as e:
+            logger.error(f"Error processing frames: {str(e)}")
+            raise RuntimeError(f"Failed to process video frames: {str(e)}")
+            
     except Exception as e:
         logger.error(f"Error in video processing: {str(e)}")
         raise RuntimeError(f"Failed to process video: {str(e)}")
