@@ -75,7 +75,7 @@ def process_video(video_file, processor, model, num_frames=16):
         stream.codec_context.thread_type = av.codec.context.ThreadType.AUTO
         stream.codec_context.thread_count = 8
         
-        # Extract frames with temporal window consideration
+        # Extract frames
         for frame in container.decode(video=0):
             frame_array = frame.to_ndarray(format="rgb24")
             resized_frame = resize_frame(frame_array, (224, 224))
@@ -90,49 +90,48 @@ def process_video(video_file, processor, model, num_frames=16):
             frames.append(frames[-1])
             timestamps.append(timestamps[-1])
         
-        # Stack frames for temporal processing (B, C, T, H, W)
-        frames_array = np.stack(frames)  # Shape: (T, H, W, C)
-        frames_array = np.transpose(frames_array, (3, 0, 1, 2))  # Shape: (C, T, H, W)
-        frames_array = np.expand_dims(frames_array, 0)  # Shape: (B, C, T, H, W)
+        # Process all frames together for overall prediction
+        inputs = processor(frames, return_tensors="pt")
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits = outputs.logits  # Shape: (1, num_classes)
         
-        # Process temporal window
-        try:
-            inputs = processor(frames, return_tensors="pt")
+        # Overall video prediction
+        scores = torch.nn.functional.softmax(logits, dim=1)[0]
+        top_scores, top_indices = torch.topk(scores, k=min(5, len(model.config.id2label)))
+        
+        overall_results = [
+            [(model.config.id2label[idx.item()], score.item())
+             for score, idx in zip(top_scores, top_indices)]
+        ]
+        
+        # Process individual frames
+        frame_results = []
+        for i, (frame, timestamp) in enumerate(zip(frames, timestamps)):
+            # Process single frame
+            frame_inputs = processor([frame], return_tensors="pt")
             with torch.no_grad():
-                outputs = model(**inputs)
-                logits = outputs.logits
+                frame_outputs = model(**frame_inputs)
+                frame_logits = frame_outputs.logits  # Shape: (1, num_classes)
             
-            # Process predictions
-            scores = torch.nn.functional.softmax(logits, dim=1)[0]
-            top_scores, top_indices = torch.topk(scores, k=min(5, len(model.config.id2label)))
+            frame_scores = torch.nn.functional.softmax(frame_logits, dim=1)[0]
+            frame_top_scores, frame_top_indices = torch.topk(
+                frame_scores, 
+                k=min(3, len(model.config.id2label))
+            )
             
-            overall_results = [
-                [(model.config.id2label[idx.item()], score.item())
-                 for score, idx in zip(top_scores, top_indices)]
+            predictions = [
+                (model.config.id2label[idx.item()], score.item())
+                for score, idx in zip(frame_top_scores, frame_top_indices)
             ]
             
-            # Process frame-level predictions
-            frame_results = []
-            for i, timestamp in enumerate(timestamps):
-                frame_scores = torch.nn.functional.softmax(logits[:, :, i], dim=1)[0]
-                frame_top_scores, frame_top_indices = torch.topk(frame_scores, k=min(3, len(model.config.id2label)))
-                
-                predictions = [
-                    (model.config.id2label[idx.item()], score.item())
-                    for score, idx in zip(frame_top_scores, frame_top_indices)
-                ]
-                
-                frame_results.append({
-                    'timestamp': timestamp,
-                    'predictions': predictions
-                })
-            
-            return overall_results, frame_results
-            
-        except Exception as e:
-            logger.error(f"Error processing tensors: {str(e)}")
-            raise RuntimeError(f"Failed to process video frames: {str(e)}")
-            
+            frame_results.append({
+                'timestamp': timestamp,
+                'predictions': predictions
+            })
+        
+        return overall_results, frame_results
+        
     except Exception as e:
         logger.error(f"Error in video processing: {str(e)}")
         raise RuntimeError(f"Failed to process video: {str(e)}")
