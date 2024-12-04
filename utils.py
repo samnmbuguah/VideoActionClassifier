@@ -119,9 +119,15 @@ def process_video(video_file, processor, model, num_frames=16):
                 outputs = model(**inputs)
                 logits = outputs.logits
             
+            # Get number of classes from model config
+            num_classes = len(model.config.id2label)
+            # Use smaller k for top predictions
+            k_overall = min(5, num_classes)
+            k_frame = min(3, num_classes)
+            
             # Process predictions
             scores = torch.nn.functional.softmax(logits, dim=1)[0]
-            top_scores, top_indices = torch.topk(scores, k=5)
+            top_scores, top_indices = torch.topk(scores, k=k_overall)
             
             overall_results = [
                 [(model.config.id2label[idx.item()], score.item())
@@ -137,7 +143,7 @@ def process_video(video_file, processor, model, num_frames=16):
                     frame_logits = frame_outputs.logits
                 
                 frame_scores = torch.nn.functional.softmax(frame_logits, dim=1)[0]
-                frame_top_scores, frame_top_indices = torch.topk(frame_scores, k=3)
+                frame_top_scores, frame_top_indices = torch.topk(frame_scores, k=k_frame)
                 
                 predictions = [
                     (model.config.id2label[idx.item()], score.item())
